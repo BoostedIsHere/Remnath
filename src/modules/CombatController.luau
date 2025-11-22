@@ -1,14 +1,9 @@
 --[[
 CombatController (server, per-character)
-Current Fists flow:
-- Client input (LocalCombatHandler in StarterPlayerScripts + tool-local WeaponClient) plays swing animations and fires CombatEvents.M1Event on the "Hit" marker (payload may include the Tool or just a swing index). Block toggles go through CombatEvents.BlockEvent.
-- Server listeners (ServerScriptService scripts and StarterCharacterScripts.CharacterCombat) forward those remotes into the CombatController instance for that character.
-- M1Attack pulls per-weapon config via WeaponModule, spawns a temporary hitbox in front of the HumanoidRootPart, applies damage/knockback to nearby humanoids, and signals HitmarkerEvent back to the attacker.
-Extension hooks:
-- Register new weapons in WeaponModule (sharing their Config) for tuning.
-- Religion/divinity systems can wrap these methods to modify damage, block state, or add perk-based effects before/after resolution.
+- Handles client-predicted hits (client runs Shapecast), server validates range/volume and applies damage/knockback.
+- Respects block/parry/dodge via BlockParryService and keeps a legacy fallback volume path for old clients.
 ]]
-local DEBUG = true  -- flip to false later
+local DEBUG = false -- flip to true to add verbose logs
 
 local CombatController = {}
 CombatController.__index = CombatController
@@ -30,12 +25,12 @@ function CombatController.new(character)
 	local self = setmetatable({}, CombatController)
 	self.Character = character
 	self.Humanoid = character:WaitForChild("Humanoid")
-	self.State = "Idle" -- "Idle", "Attacking", "Blocking", etc.
+	self.State = "Idle"
+	self._attackToken = 0
 	return self
 end
 
---// Utility: get current weapon config (or nil)
--- Get current weapon config (if the character is holding a Tool we know).
+--// Utility
 local function getWeaponConfigForCharacter(character)
 	if not character then return nil end
 	local tool = character:FindFirstChildOfClass("Tool")
@@ -53,26 +48,92 @@ local function getWeaponConfigForCharacter(character)
 	return cfg, tool
 end
 
+local function getTimingFromConfig(value, swingIndex, legacyTable, fallback)
+	if type(value) == "table" then
+		return value[swingIndex] or value[1] or fallback
+	end
+	if type(value) == "number" then
+		return value
+	end
+	if type(legacyTable) == "table" then
+		return legacyTable[swingIndex] or legacyTable[1] or fallback
+	end
+	return fallback
+end
+
+local function applyDamageAndKnockback(attackerPlayer, attackerCharacter, attackerHRP, targetHum, damage, knockback)
+	if targetHum.Health <= 0 then
+		return
+	end
+
+	local targetHRP = targetHum.Parent and targetHum.Parent:FindFirstChild("HumanoidRootPart")
+	if not targetHRP then
+		return
+	end
+
+	if damage > 0 then
+		targetHum:TakeDamage(damage)
+	end
+
+	if knockback > 0 then
+		local displacement = targetHRP.Position - attackerHRP.Position
+		local direction = displacement.Magnitude > 0 and displacement.Unit or attackerHRP.CFrame.LookVector
+		local bv = Instance.new("BodyVelocity")
+		bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+		bv.Velocity = direction * knockback
+		bv.Parent = targetHRP
+		Debris:AddItem(bv, 0.2)
+	end
+
+	local attacker = attackerPlayer or Players:GetPlayerFromCharacter(attackerCharacter)
+	if attacker and damage > 0 then
+		local targetName = targetHum.Parent and targetHum.Parent.Name or targetHum.Name
+		HitmarkerEvent:FireClient(attacker, targetName)
+	end
+end
+
 --// Core M1 attack
--- Accepts flexible args so different server scripts still work.
--- Possible calls:
---   controller:M1Attack(player, tool, swingIndex)
---   controller:M1Attack(player, swingIndex)
---   controller:M1Attack(swingIndex)
-function CombatController:M1Attack(a, b, c)
+function CombatController:M1Attack(a, b, c, d, e)
 	-- Decode args
-	local player, tool, swingIndex
+	local player, tool, swingIndex, targetHumanoid, hitPosition
 
 	if typeof(a) == "Instance" and a:IsA("Player") then
 		player = a
 		if typeof(b) == "Instance" and b:IsA("Tool") then
 			tool = b
-			swingIndex = c
+			if typeof(c) == "Instance" and c:IsA("Humanoid") then
+				targetHumanoid = c
+			elseif typeof(c) == "Vector3" then
+				hitPosition = c
+			else
+				swingIndex = c
+				if typeof(d) == "Instance" and d:IsA("Humanoid") then
+					targetHumanoid = d
+				elseif typeof(d) == "Vector3" then
+					hitPosition = d
+				end
+			end
 		else
 			swingIndex = b
+			if typeof(c) == "Instance" and c:IsA("Humanoid") then
+				targetHumanoid = c
+			elseif typeof(c) == "Vector3" then
+				hitPosition = c
+			end
+			if typeof(d) == "Vector3" then
+				hitPosition = d
+			end
 		end
 	else
 		swingIndex = a
+		if typeof(b) == "Instance" and b:IsA("Humanoid") then
+			targetHumanoid = b
+		elseif typeof(b) == "Vector3" then
+			hitPosition = b
+		end
+		if typeof(c) == "Vector3" then
+			hitPosition = c
+		end
 	end
 
 	if type(swingIndex) ~= "number" then
@@ -88,77 +149,132 @@ function CombatController:M1Attack(a, b, c)
 		return
 	end
 
-	-- Allow attacking from Idle or already Attacking (for chains)
 	if self.State ~= "Idle" and self.State ~= "Attacking" then
 		return
 	end
 
-	self.State = "Attacking"
-
-	-- Get weapon config
 	local config
 	config, tool = getWeaponConfigForCharacter(character)
 	if not config then
 		warn("[CombatController] No weapon config for character", character.Name)
-		self.State = "Idle"
 		return
 	end
 
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 	if not hrp then
-		self.State = "Idle"
 		return
 	end
 
-	-- Read config with fallbacks
-	local range          = config.Range or 4
-	local hitboxSize     = config.HitboxSize or Vector3.new(4, 4, 4)
-	local damageTable    = config.Damage or {}
-	local knockTable     = config.Knockback or {}
-	local recovery       = config.M1Recovery or 0.25
-	local activeFrames   = config.ActiveFrames or {}
-	local activeDuration = activeFrames[swingIndex] or activeFrames[1] or 0.1
+	local range         = config.Range or 4
+	local hitboxSize    = config.HitboxSize or Vector3.new(4, 4, 4)
+	local hitboxOffset  = config.HitboxOffset or CFrame.new(0, 0, -range)
+	local castType      = config.CastType or "Blockcast"
+	local hitboxRadius  = config.HitboxRadius or 0
+	local damageTable   = config.Damage or {}
+	local knockTable    = config.Knockback or {}
+	local activeFrames  = config.ActiveFrames or {}
 
-	local damage    = damageTable[swingIndex] or damageTable[1] or 10
-	local knockback = knockTable[swingIndex] or knockTable[1] or 20
+	local damage          = damageTable[swingIndex] or damageTable[1] or 10
+	local knockback       = knockTable[swingIndex] or knockTable[1] or 20
+	local activeDuration  = getTimingFromConfig(config.ActiveTime, swingIndex, activeFrames, 0.1)
+	local recovery        = getTimingFromConfig(config.RecoveryTime, swingIndex, nil, config.M1Recovery or 0.25)
+	local validationScale = config.ServerValidationScale or 0.85
+	local isHeavy         = config.HeavyAttack == true or config.IsHeavyAttack == true
 
-	print(("[CombatController] M1Attack swing %d | dmg=%d, kb=%d"):format(swingIndex, damage, knockback))
+	self.State = "Attacking"
+	local attackToken = os.clock()
+	self._attackToken = attackToken
 
-	----------------------------------------------------------------
-	-- Spawn hitbox and keep it aligned to the character's current
-	-- facing for the active window. Rotating mid-swing updates the box.
-	----------------------------------------------------------------
-	local hitbox = Instance.new("Part")
-	hitbox.Name = "Hitbox_" .. tostring(swingIndex)
-	hitbox.Size = hitboxSize
-	hitbox.CanCollide = false
-	hitbox.Anchored = true
-	hitbox.Transparency = 0.8
-	hitbox.Color = Color3.fromRGB(255, 0, 0) -- debug visual
-	hitbox.Parent = workspace
+	task.delay(recovery, function()
+		if self.State == "Attacking" and self._attackToken == attackToken then
+			self.State = "Idle"
+		end
+	end)
 
+	-- Client-provided target path
+	if typeof(targetHumanoid) == "Instance" and targetHumanoid:IsA("Humanoid") then
+		local targetCharacter = targetHumanoid.Parent
+		local targetHRP = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+
+		if not targetCharacter or not targetHRP or targetHumanoid.Health <= 0 then return end
+		if targetCharacter == character then return end
+
+		local allowedDistance = range + ((hitboxSize.Z) * 0.5) + hitboxRadius
+		if (targetHRP.Position - hrp.Position).Magnitude > allowedDistance then return end
+
+		if hitPosition then
+			local posDistance = (hitPosition - hrp.Position).Magnitude
+			if posDistance > allowedDistance + 1 then return end
+		end
+
+		local overlapParams = OverlapParams.new()
+		overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+		overlapParams.FilterDescendantsInstances = {character}
+
+		local withinVolume = false
+		if castType == "Spherecast" then
+			local sphereRadius = (hitboxRadius > 0 and hitboxRadius or (hitboxSize.Magnitude * 0.25)) * validationScale
+			local center = (hrp.CFrame * hitboxOffset).Position
+			if (targetHRP.Position - center).Magnitude <= sphereRadius then
+				withinVolume = true
+			end
+		else
+			local validationSize = hitboxSize * validationScale
+			local validationCFrame = hrp.CFrame * hitboxOffset
+			for _, part in ipairs(workspace:GetPartBoundsInBox(validationCFrame, validationSize, overlapParams)) do
+				if part:IsDescendantOf(targetCharacter) then
+					withinVolume = true
+					break
+				end
+			end
+		end
+
+		if not withinVolume then return end
+
+		local damageToApply = damage
+		local knockbackScale = 1
+		local defenderService = BlockParryService.GetFromCharacter(targetCharacter)
+		if defenderService then
+			local blockParryResult = defenderService:ResolveIncomingHit(player, { isHeavy = isHeavy })
+			if blockParryResult and blockParryResult.damageMultiplier then
+				damageToApply *= blockParryResult.damageMultiplier
+			end
+			if blockParryResult and blockParryResult.parried then
+				damageToApply = 0
+				knockbackScale = 0
+			elseif blockParryResult and blockParryResult.blocked then
+				knockbackScale = 0.35
+			end
+		end
+
+		damageToApply = math.max(0, damageToApply)
+		if damageToApply > 0 or knockbackScale > 0 then
+			applyDamageAndKnockback(player, character, hrp, targetHumanoid, damageToApply, knockback * knockbackScale)
+		end
+		return
+	end
+
+	-- Fallback server-driven volume (legacy clients)
 	local overlapParams = OverlapParams.new()
 	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 	overlapParams.FilterDescendantsInstances = {character}
 
-	local alreadyHit = {} -- prevent multi-hit during this swing
+	local alreadyHit = {}
 	local startTime = os.clock()
 
 	local function updateHitbox()
-		if not character or not character.Parent then
-			return false
-		end
-
+		if not character or not character.Parent then return false end
 		local currentHRP = character:FindFirstChild("HumanoidRootPart")
-		if not currentHRP then
-			return false
+		if not currentHRP then return false end
+
+		local hitboxCFrame = currentHRP.CFrame * hitboxOffset
+		local parts
+		if castType == "Spherecast" then
+			parts = workspace:GetPartBoundsInRadius(hitboxCFrame.Position, (hitboxRadius > 0 and hitboxRadius or (hitboxSize.Magnitude * 0.25)), overlapParams)
+		else
+			parts = workspace:GetPartBoundsInBox(hitboxCFrame, hitboxSize, overlapParams)
 		end
 
-		-- Re-align to current facing each frame so turning mid-swing matters.
-		local hitboxCFrame = currentHRP.CFrame * CFrame.new(0, 0, -range)
-		hitbox.CFrame = hitboxCFrame
-
-		local parts = workspace:GetPartBoundsInBox(hitboxCFrame, hitboxSize, overlapParams)
 		for _, part in ipairs(parts) do
 			local model = part:FindFirstAncestorOfClass("Model")
 			if model and model ~= character then
@@ -167,53 +283,29 @@ function CombatController:M1Attack(a, b, c)
 
 				if hum and targetHRP and hum.Health > 0 and not alreadyHit[hum] then
 					alreadyHit[hum] = true
+					if DEBUG then
+						print("[CombatController]  -> Hit", model.Name)
+					end
 
-					print("[CombatController]  -> Hit", model.Name)
 					local damageToApply = damage
 					local knockbackScale = 1
-					local blockParryResult
-
 					local defenderService = BlockParryService.GetFromCharacter(model)
 					if defenderService then
-						blockParryResult = defenderService:ResolveIncomingHit(player, {
-							isHeavy = config.HeavyAttack == true or config.IsHeavyAttack == true,
-						})
-
+						local blockParryResult = defenderService:ResolveIncomingHit(player, { isHeavy = isHeavy })
 						if blockParryResult and blockParryResult.damageMultiplier then
 							damageToApply *= blockParryResult.damageMultiplier
 						end
-					end
-
-					if blockParryResult and blockParryResult.parried then
-						-- Defender parried: skip damage/knockback (attacker stun handled by BlockParryService).
-						damageToApply = 0
-						knockbackScale = 0
-					elseif blockParryResult and blockParryResult.blocked then
-						-- On block, keep some pushback but soften it.
-						knockbackScale = 0.35
+						if blockParryResult and blockParryResult.parried then
+							damageToApply = 0
+							knockbackScale = 0
+						elseif blockParryResult and blockParryResult.blocked then
+							knockbackScale = 0.35
+						end
 					end
 
 					damageToApply = math.max(0, damageToApply)
-					if damageToApply > 0 then
-						hum:TakeDamage(damageToApply)
-					end
-
-					-- Simple knockback
-					if knockbackScale > 0 then
-						local direction = (targetHRP.Position - currentHRP.Position).Unit
-						local bv = Instance.new("BodyVelocity")
-						bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-						bv.Velocity = direction * knockback * knockbackScale
-						bv.Parent = targetHRP
-						Debris:AddItem(bv, 0.2)
-					end
-
-					-- Hitmarker to attacker
-					if not player then
-						player = game.Players:GetPlayerFromCharacter(character)
-					end
-					if player and (not blockParryResult or not blockParryResult.parried) then
-						HitmarkerEvent:FireClient(player, model.Name)
+					if damageToApply > 0 or knockbackScale > 0 then
+						applyDamageAndKnockback(player, character, currentHRP, hum, damageToApply, knockback * knockbackScale)
 					end
 				end
 			end
@@ -222,7 +314,6 @@ function CombatController:M1Attack(a, b, c)
 		return true
 	end
 
-	-- Align and check immediately, then keep updating through the active window.
 	updateHitbox()
 	local hbConn
 	hbConn = RunService.Heartbeat:Connect(function()
@@ -234,29 +325,22 @@ function CombatController:M1Attack(a, b, c)
 			hbConn:Disconnect()
 		end
 	end)
-
-	Debris:AddItem(hitbox, activeDuration + 0.1)
-
-	----------------------------------------------------------------
-	-- Recovery / reset state
-	----------------------------------------------------------------
-	task.delay(recovery, function()
-		if self.State == "Attacking" then
-			self.State = "Idle"
-		end
-	end)
 end
 
 --// Blocking
 function CombatController:StartBlock()
 	self.State = "Blocking"
-	print("[CombatController] StartBlock, state now Blocking")
+	if DEBUG then
+		print("[CombatController] StartBlock, state now Blocking")
+	end
 end
 
 function CombatController:EndBlock()
 	if self.State == "Blocking" then
 		self.State = "Idle"
-		print("[CombatController] EndBlock, state now Idle")
+		if DEBUG then
+			print("[CombatController] EndBlock, state now Idle")
+		end
 	end
 end
 
