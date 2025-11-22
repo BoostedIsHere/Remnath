@@ -1,7 +1,7 @@
 --[[
 LocalCombatHandler (StarterPlayerScripts)
 - Waits for the Fists tool, plays local swing animations on M1.
-- Fires CombatEvents.M1Event with the tool + swing index exactly when the "Hit" marker/keyframe occurs.
+- Drives client-side Deepwoken-style hitboxes during the active window and fires CombatEvents.M1Event with tool, swing index, and target humanoid.
 - Sends block start/stop to CombatEvents.BlockEvent.
 - Plays the tool HitSound when this player receives a hitmarker.
 Acts as the general client bridge until weapon-specific handlers fully replace it.
@@ -14,7 +14,8 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
-local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
+local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator")
+animator.Parent = humanoid
 
 -- Wait for tool
 local tool
@@ -23,6 +24,12 @@ repeat
 	task.wait(0.1)
 until tool
 print("[LocalCombatHandler] Tool found:", tool.Name)
+
+-- If the tool already has its own WeaponClient, skip this generic handler to avoid double hitboxes.
+if tool:FindFirstChild("WeaponClient") then
+	warn("[LocalCombatHandler] Tool-local WeaponClient present; skipping LocalCombatHandler for", tool.Name)
+	return
+end
 
 -- Equipped state
 local equipped = false
@@ -55,6 +62,7 @@ local CombatEvents = ReplicatedStorage:WaitForChild("CombatEvents")
 local M1Event = CombatEvents:WaitForChild("M1Event")
 local BlockEvent = CombatEvents:WaitForChild("BlockEvent")
 local HitmarkerEvent = CombatEvents:WaitForChild("HitmarkerEvent")
+local ClientHitbox = require(ReplicatedStorage.Modules:WaitForChild("ClientHitbox"))
 
 -- HitSound inside tool
 local hitSound = tool:FindFirstChild("HitSound")
@@ -63,49 +71,35 @@ if not hitSound then
 end
 
 ---------------------------------------------------------------------
--- FIRE M1Event WHEN THE ANIMATION "Hit" MARKER IS REACHED + DEBUG
+-- Client-side hitbox controller (persistent)
 ---------------------------------------------------------------------
-for index, track in ipairs(Punches) do
-	-- debug when track starts/stops
-	track:GetPropertyChangedSignal("IsPlaying"):Connect(function()
-		if track.IsPlaying then
-			print(("[LocalCombatHandler] Swing %d started (len = %.2f)"):format(index, track.Length))
-		else
-			print(("[LocalCombatHandler] Swing %d stopped"):format(index))
-		end
-	end)
+local hitboxController = ClientHitbox.new({
+	Tool = tool,
+	Character = character,
+	Config = Config,
+	OnHit = function(hum, position, swingIndex)
+		M1Event:FireServer(tool, swingIndex, hum, position)
+	end,
+	OnFallback = function(swingIndex)
+		M1Event:FireServer(tool, swingIndex)
+	end,
+})
 
-	-- EVENT MARKER "Hit"
-	track:GetMarkerReachedSignal("Hit"):Connect(function()
-		print("[LocalCombatHandler] MARKER 'Hit' reached on swing", index)
-
-		if not equipped then
-			print("[LocalCombatHandler]  - ignoring marker, not equipped")
-			return
-		end
-
-		print("[LocalCombatHandler] >>> Firing M1Event(tool, index) from MARKER on swing", index)
-		M1Event:FireServer(tool, index)
-	end)
-
-
-	-- ALSO listen for a keyframe named "Hit" just in case
-	track.KeyframeReached:Connect(function(keyframeName)
-		print("[LocalCombatHandler] KEYFRAME reached:", keyframeName, "on swing", index)
-		if keyframeName == "Hit" then
-			if not equipped then
-				print("[LocalCombatHandler]  - ignoring keyframe, not equipped")
-				return
-			end
-			print("[LocalCombatHandler] >>> Firing M1Event(tool, index) from KEYFRAME on swing", index)
-			M1Event:FireServer(tool, index)
-		end
-	end)
+local function getTimingFromConfig(value, swingIndex, legacyTable)
+	if type(value) == "table" then
+		return value[swingIndex] or value[1]
+	end
+	if type(value) == "number" then
+		return value
+	end
+	if type(legacyTable) == "table" then
+		return legacyTable[swingIndex] or legacyTable[1]
+	end
+	return nil
 end
 
-
 ---------------------------------------------------------------------
--- Mouse1 input: ONLY plays animation, DOES NOT fire remote
+-- Mouse1 input: plays animation and runs client hitbox window
 ---------------------------------------------------------------------
 UserInputService.InputBegan:Connect(function(input, gp)
 	if gp or not equipped then return end
@@ -122,7 +116,17 @@ UserInputService.InputBegan:Connect(function(input, gp)
 		return
 	end
 
+	local windupTime = getTimingFromConfig(Config.WindupTime, currentSwing) or 0
+	local activeTime = getTimingFromConfig(Config.ActiveTime, currentSwing, Config.ActiveFrames) or 0.1
+	local recoveryTime = getTimingFromConfig(Config.RecoveryTime, currentSwing) or Config.M1Recovery or 0.25
+	local swingId = currentSwing
+
 	track:Play()
+
+	task.delay(windupTime, function()
+		if not track.IsPlaying or not equipped then return end
+		hitboxController:StartSwing(swingId, activeTime)
+	end)
 
 	track.Stopped:Once(function()
 		swinging = false
@@ -131,6 +135,13 @@ UserInputService.InputBegan:Connect(function(input, gp)
 			currentSwing = 1
 		end
 		print("[LocalCombatHandler] Animation finished, next swing:", currentSwing)
+	end)
+
+	-- Safety: end the swing even if the animation fails to stop.
+	task.delay(windupTime + activeTime + recoveryTime, function()
+		if swinging then
+			swinging = false
+		end
 	end)
 end)
 

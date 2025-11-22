@@ -1,7 +1,7 @@
 --[[
 Tool-local client for Fists.
-- Plays swing animations on M1 and fires CombatEvents.M1Event on the "Hit" marker (sends swing index only).
-- Mirrors LocalCombatHandler so the tool still works if the generic handler is disabled.
+- Plays swing animations on M1 and drives client-side Deepwoken-style hitboxes during the active window.
+- Fires CombatEvents.M1Event with the tool, swing index, and target humanoid for each new hit.
 - Forwards block start/stop to CombatEvents.BlockEvent and plays HitSound on hitmarker.
 ]]
 print("[WeaponClient] FILE VERSION running")
@@ -19,6 +19,9 @@ local M1Event        = CombatEvents:WaitForChild("M1Event")
 local BlockEvent     = CombatEvents:WaitForChild("BlockEvent")
 local HitmarkerEvent = CombatEvents:WaitForChild("HitmarkerEvent")
 
+local Config = require(tool:WaitForChild("Config"))
+local ClientHitbox = require(ReplicatedStorage.Modules:WaitForChild("ClientHitbox"))
+
 -- Animator
 local animator = humanoid:FindFirstChildOfClass("Animator")
 if not animator then
@@ -29,14 +32,14 @@ end
 -- Animations inside tool.Animations (P1, P2, P3, P4)
 local animFolder = tool:WaitForChild("Animations")
 
-local attackAnims = {
-	[1] = animFolder:WaitForChild("P1"),
-	[2] = animFolder:WaitForChild("P2"),
-	[3] = animFolder:WaitForChild("P3"),
-	[4] = animFolder:WaitForChild("P4"),
-}
-
 local attackTracks = {}
+for index, animName in ipairs(Config.Combo) do
+	local anim = animFolder:WaitForChild(animName)
+	local track = animator:LoadAnimation(anim)
+	track.Priority = Enum.AnimationPriority.Action
+	attackTracks[index] = track
+end
+
 local currentSwing = 1
 local swinging     = false
 local equipped     = false
@@ -44,20 +47,32 @@ local equipped     = false
 local hitSound = tool:FindFirstChild("HitSound")
 
 ---------------------------------------------------------------------
--- Load animations and hook "Hit" event (fires to server)
+-- Hitbox helpers
 ---------------------------------------------------------------------
-for index, anim in pairs(attackAnims) do
-	local track = animator:LoadAnimation(anim)
-	attackTracks[index] = track
+-- Persistent hitbox controller
+local hitboxController = ClientHitbox.new({
+	Tool = tool,
+	Character = character,
+	Config = Config,
+	OnHit = function(hum, position, swingIndex)
+		M1Event:FireServer(tool, swingIndex, hum, position)
+	end,
+	OnFallback = function(swingIndex)
+		M1Event:FireServer(tool, swingIndex)
+	end,
+})
 
-	-- When animation reaches the "Hit" marker, tell the server
-	track:GetMarkerReachedSignal("Hit"):Connect(function(markerName)
-		if not equipped then return end
-		if markerName == "Hit" then
-			-- Fire to server at exact impact time
-			M1Event:FireServer(index)
-		end
-	end)
+local function getTimingFromConfig(value, swingIndex, legacyTable)
+	if type(value) == "table" then
+		return value[swingIndex] or value[1]
+	end
+	if type(value) == "number" then
+		return value
+	end
+	if type(legacyTable) == "table" then
+		return legacyTable[swingIndex] or legacyTable[1]
+	end
+	return nil
 end
 
 ---------------------------------------------------------------------
@@ -86,7 +101,18 @@ local function playM1()
 	end
 
 	swinging = true
+
+	local windupTime = getTimingFromConfig(Config.WindupTime, currentSwing) or 0
+	local activeTime = getTimingFromConfig(Config.ActiveTime, currentSwing, Config.ActiveFrames) or 0.1
+	local recoveryTime = getTimingFromConfig(Config.RecoveryTime, currentSwing) or Config.M1Recovery or 0.25
+	local swingId = currentSwing
+
 	track:Play()
+
+	task.delay(windupTime, function()
+		if not track.IsPlaying or not equipped then return end
+		hitboxController:StartSwing(swingId, activeTime)
+	end)
 
 	track.Stopped:Connect(function()
 		swinging = false
@@ -95,6 +121,12 @@ local function playM1()
 		currentSwing += 1
 		if currentSwing > #attackTracks then
 			currentSwing = 1
+		end
+	end)
+
+	task.delay(windupTime + activeTime + recoveryTime, function()
+		if swinging then
+			swinging = false
 		end
 	end)
 end
