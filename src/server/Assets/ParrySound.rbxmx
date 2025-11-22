@@ -1,0 +1,12 @@
+<roblox version="4">
+	<Item class="Sound" referent="RBX0">
+		<Properties>
+			<float name="PlaybackSpeed">1</float>
+			<float name="RollOffMaxDistance">70</float>
+			<float name="RollOffMinDistance">10</float>
+			<string name="SoundId">rbxassetid://15057057706</string>
+			<float name="Volume">0.9</float>
+			<string name="Name">ParrySound</string>
+		</Properties>
+	</Item>
+</roblox>

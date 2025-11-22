@@ -13,14 +13,17 @@ local DEBUG = true  -- flip to false later
 local CombatController = {}
 CombatController.__index = CombatController
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local CombatEvents = ReplicatedStorage:WaitForChild("CombatEvents")
 local HitmarkerEvent = CombatEvents:WaitForChild("HitmarkerEvent")
 
 local WeaponModule = require(ReplicatedStorage.Modules:WaitForChild("WeaponModule"))
+local BlockParryService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Controllers"):WaitForChild("BlockParryService"))
 
 --// Constructor
 function CombatController.new(character)
@@ -78,6 +81,10 @@ function CombatController:M1Attack(a, b, c)
 
 	local character = self.Character
 	if not character or not self.Humanoid or self.Humanoid.Health <= 0 then
+		return
+	end
+
+	if self.Humanoid:GetAttribute("IsBlocking") or self.Humanoid:GetAttribute("IsParrying") or self.Humanoid:GetAttribute("IsDodging") then
 		return
 	end
 
@@ -162,21 +169,50 @@ function CombatController:M1Attack(a, b, c)
 					alreadyHit[hum] = true
 
 					print("[CombatController]  -> Hit", model.Name)
-					hum:TakeDamage(damage)
+					local damageToApply = damage
+					local knockbackScale = 1
+					local blockParryResult
+
+					local defenderService = BlockParryService.GetFromCharacter(model)
+					if defenderService then
+						blockParryResult = defenderService:ResolveIncomingHit(player, {
+							isHeavy = config.HeavyAttack == true or config.IsHeavyAttack == true,
+						})
+
+						if blockParryResult and blockParryResult.damageMultiplier then
+							damageToApply *= blockParryResult.damageMultiplier
+						end
+					end
+
+					if blockParryResult and blockParryResult.parried then
+						-- Defender parried: skip damage/knockback (attacker stun handled by BlockParryService).
+						damageToApply = 0
+						knockbackScale = 0
+					elseif blockParryResult and blockParryResult.blocked then
+						-- On block, keep some pushback but soften it.
+						knockbackScale = 0.35
+					end
+
+					damageToApply = math.max(0, damageToApply)
+					if damageToApply > 0 then
+						hum:TakeDamage(damageToApply)
+					end
 
 					-- Simple knockback
-					local direction = (targetHRP.Position - currentHRP.Position).Unit
-					local bv = Instance.new("BodyVelocity")
-					bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-					bv.Velocity = direction * knockback
-					bv.Parent = targetHRP
-					Debris:AddItem(bv, 0.2)
+					if knockbackScale > 0 then
+						local direction = (targetHRP.Position - currentHRP.Position).Unit
+						local bv = Instance.new("BodyVelocity")
+						bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+						bv.Velocity = direction * knockback * knockbackScale
+						bv.Parent = targetHRP
+						Debris:AddItem(bv, 0.2)
+					end
 
 					-- Hitmarker to attacker
 					if not player then
 						player = game.Players:GetPlayerFromCharacter(character)
 					end
-					if player then
+					if player and (not blockParryResult or not blockParryResult.parried) then
 						HitmarkerEvent:FireClient(player, model.Name)
 					end
 				end
