@@ -2,7 +2,6 @@
 LocalCombatHandler (StarterPlayerScripts)
 - Waits for the Fists tool, plays local swing animations on M1.
 - Fires CombatEvents.M1Event with the tool + swing index exactly when the "Hit" marker/keyframe occurs.
-- Sends block start/stop to CombatEvents.BlockEvent.
 - Plays the tool HitSound when this player receives a hitmarker.
 Acts as the general client bridge until weapon-specific handlers fully replace it.
 ]]
@@ -53,7 +52,6 @@ local swinging = false
 -- Remotes
 local CombatEvents = ReplicatedStorage:WaitForChild("CombatEvents")
 local M1Event = CombatEvents:WaitForChild("M1Event")
-local BlockEvent = CombatEvents:WaitForChild("BlockEvent")
 local HitmarkerEvent = CombatEvents:WaitForChild("HitmarkerEvent")
 
 -- HitSound inside tool
@@ -132,22 +130,6 @@ UserInputService.InputBegan:Connect(function(input, gp)
 		end
 		print("[LocalCombatHandler] Animation finished, next swing:", currentSwing)
 	end)
-end)
-
----------------------------------------------------------------------
--- Block input
----------------------------------------------------------------------
-UserInputService.InputBegan:Connect(function(input, gp)
-	if gp then return end
-	if input.KeyCode == Enum.KeyCode.F then
-		BlockEvent:FireServer(true)
-	end
-end)
-
-UserInputService.InputEnded:Connect(function(input, gp)
-	if input.KeyCode == Enum.KeyCode.F then
-		BlockEvent:FireServer(false)
-	end
 end)
 
 ---------------------------------------------------------------------

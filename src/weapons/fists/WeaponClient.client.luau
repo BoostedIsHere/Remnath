@@ -2,7 +2,7 @@
 Tool-local client for Fists.
 - Plays swing animations on M1 and fires CombatEvents.M1Event on the "Hit" marker (sends swing index only).
 - Mirrors LocalCombatHandler so the tool still works if the generic handler is disabled.
-- Forwards block start/stop to CombatEvents.BlockEvent and plays HitSound on hitmarker.
+- Plays HitSound on hitmarker.
 ]]
 print("[WeaponClient] FILE VERSION running")
 
@@ -16,7 +16,6 @@ local UserInputService = game:GetService("UserInputService")
 
 local CombatEvents = ReplicatedStorage:WaitForChild("CombatEvents")
 local M1Event        = CombatEvents:WaitForChild("M1Event")
-local BlockEvent     = CombatEvents:WaitForChild("BlockEvent")
 local HitmarkerEvent = CombatEvents:WaitForChild("HitmarkerEvent")
 
 -- Animator
@@ -105,26 +104,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		playM1()
-	end
-end)
-
----------------------------------------------------------------------
--- Block input
----------------------------------------------------------------------
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-	if not equipped then return end
-
-	if input.KeyCode == Enum.KeyCode.F then
-		BlockEvent:FireServer(true)
-	end
-end)
-
-UserInputService.InputEnded:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-
-	if input.KeyCode == Enum.KeyCode.F then
-		BlockEvent:FireServer(false)
 	end
 end)
 

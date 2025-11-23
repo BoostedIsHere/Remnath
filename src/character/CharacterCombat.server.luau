@@ -13,7 +13,6 @@ local CombatController = CombatControllerModule.new(character)
 
 local CombatEvents = ReplicatedStorage:WaitForChild("CombatEvents")
 local M1Event = CombatEvents:WaitForChild("M1Event")
-local BlockEvent = CombatEvents:WaitForChild("BlockEvent")
 
 M1Event.OnServerEvent:Connect(function(plr, tool, swing)
 	if plr ~= player then return end
@@ -21,10 +20,4 @@ M1Event.OnServerEvent:Connect(function(plr, tool, swing)
 		print("[CharacterCombat] M1Event received from", plr.Name)
 		CombatController:M1Attack(plr, tool, swing)
 	end
-end)
-
--- Block events
-BlockEvent.OnServerEvent:Connect(function(plr, isBlocking)
-	if plr ~= player then return end
-	-- Optional: implement blocking logic here
 end)

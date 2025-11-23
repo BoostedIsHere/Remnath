@@ -103,10 +103,6 @@ function DodgeService:isInhibited()
 		return true
 	end
 
-	if self.Humanoid:GetAttribute("IsBlocking") or self.Humanoid:GetAttribute("IsParrying") then
-		return true
-	end
-
 	for _, attr in ipairs(DodgeConfig.InhibitAttributes) do
 		if isTruthyAttribute(self.Humanoid, attr) then
 			return true
@@ -215,7 +211,7 @@ function DodgeService:stopDodge(reason)
 	self.IsDodging = false
 	if self.Humanoid then
 		self.Humanoid:SetAttribute("IsDodging", nil)
-	 end
+	end
 	self:stripIframes(reason or "End")
 
 	local now = os.clock()

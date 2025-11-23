@@ -1,12 +1,12 @@
 --[[
 CombatController (server, per-character)
 Current Fists flow:
-- Client input (LocalCombatHandler in StarterPlayerScripts + tool-local WeaponClient) plays swing animations and fires CombatEvents.M1Event on the "Hit" marker (payload may include the Tool or just a swing index). Block toggles go through CombatEvents.BlockEvent.
+- Client input (LocalCombatHandler in StarterPlayerScripts + tool-local WeaponClient) plays swing animations and fires CombatEvents.M1Event on the "Hit" marker (payload may include the Tool or just a swing index).
 - Server listeners (ServerScriptService scripts and StarterCharacterScripts.CharacterCombat) forward those remotes into the CombatController instance for that character.
 - M1Attack pulls per-weapon config via WeaponModule, spawns a temporary hitbox in front of the HumanoidRootPart, applies damage/knockback to nearby humanoids, and signals HitmarkerEvent back to the attacker.
 Extension hooks:
 - Register new weapons in WeaponModule (sharing their Config) for tuning.
-- Religion/divinity systems can wrap these methods to modify damage, block state, or add perk-based effects before/after resolution.
+- Religion/divinity systems can wrap these methods to modify damage or add perk-based effects before/after resolution.
 ]]
 local DEBUG = true  -- flip to false later
 
@@ -17,13 +17,11 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 local RunService = game:GetService("RunService")
-local ServerScriptService = game:GetService("ServerScriptService")
 
 local CombatEvents = ReplicatedStorage:WaitForChild("CombatEvents")
 local HitmarkerEvent = CombatEvents:WaitForChild("HitmarkerEvent")
 
 local WeaponModule = require(ReplicatedStorage.Modules:WaitForChild("WeaponModule"))
-local BlockParryService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Controllers"):WaitForChild("BlockParryService"))
 
 --// Constructor
 function CombatController.new(character)
@@ -84,7 +82,7 @@ function CombatController:M1Attack(a, b, c)
 		return
 	end
 
-	if self.Humanoid:GetAttribute("IsBlocking") or self.Humanoid:GetAttribute("IsParrying") or self.Humanoid:GetAttribute("IsDodging") then
+	if self.Humanoid:GetAttribute("IsDodging") then
 		return
 	end
 
@@ -168,52 +166,31 @@ function CombatController:M1Attack(a, b, c)
 				if hum and targetHRP and hum.Health > 0 and not alreadyHit[hum] then
 					alreadyHit[hum] = true
 
-					print("[CombatController]  -> Hit", model.Name)
-					local damageToApply = damage
-					local knockbackScale = 1
-					local blockParryResult
+					if hum:GetAttribute("IsBlocking") then
+						print("[CombatController]  -> Hit blocked by", model.Name)
+					else
+						print("[CombatController]  -> Hit", model.Name)
+						local damageToApply = math.max(0, damage)
 
-					local defenderService = BlockParryService.GetFromCharacter(model)
-					if defenderService then
-						blockParryResult = defenderService:ResolveIncomingHit(player, {
-							isHeavy = config.HeavyAttack == true or config.IsHeavyAttack == true,
-						})
-
-						if blockParryResult and blockParryResult.damageMultiplier then
-							damageToApply *= blockParryResult.damageMultiplier
-						end
-					end
-
-					if blockParryResult and blockParryResult.parried then
-						-- Defender parried: skip damage/knockback (attacker stun handled by BlockParryService).
-						damageToApply = 0
-						knockbackScale = 0
-					elseif blockParryResult and blockParryResult.blocked then
-						-- On block, keep some pushback but soften it.
-						knockbackScale = 0.35
-					end
-
-					damageToApply = math.max(0, damageToApply)
-					if damageToApply > 0 then
-						hum:TakeDamage(damageToApply)
-					end
-
-					-- Simple knockback
-					if knockbackScale > 0 then
+						-- Simple knockback
 						local direction = (targetHRP.Position - currentHRP.Position).Unit
 						local bv = Instance.new("BodyVelocity")
 						bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-						bv.Velocity = direction * knockback * knockbackScale
+						bv.Velocity = direction * knockback
 						bv.Parent = targetHRP
 						Debris:AddItem(bv, 0.2)
-					end
 
-					-- Hitmarker to attacker
-					if not player then
-						player = game.Players:GetPlayerFromCharacter(character)
-					end
-					if player and (not blockParryResult or not blockParryResult.parried) then
-						HitmarkerEvent:FireClient(player, model.Name)
+						if damageToApply > 0 then
+							hum:TakeDamage(damageToApply)
+						end
+
+						-- Hitmarker to attacker
+						if not player then
+							player = game.Players:GetPlayerFromCharacter(character)
+						end
+						if player then
+							HitmarkerEvent:FireClient(player, model.Name)
+						end
 					end
 				end
 			end
@@ -245,19 +222,6 @@ function CombatController:M1Attack(a, b, c)
 			self.State = "Idle"
 		end
 	end)
-end
-
---// Blocking
-function CombatController:StartBlock()
-	self.State = "Blocking"
-	print("[CombatController] StartBlock, state now Blocking")
-end
-
-function CombatController:EndBlock()
-	if self.State == "Blocking" then
-		self.State = "Idle"
-		print("[CombatController] EndBlock, state now Idle")
-	end
 end
 
 return CombatController

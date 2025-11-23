@@ -19,10 +19,7 @@
         "DodgeEvent": {
           "$className": "RemoteEvent"
         },
-        "BlockEvent": {
-          "$className": "RemoteEvent"
-        },
-        "ParryEvent": {
+        "BlockRemote": {
           "$className": "RemoteEvent"
         }
       },

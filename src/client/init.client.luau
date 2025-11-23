@@ -8,6 +8,5 @@ end
 
 local movementInput = require(root:WaitForChild("Input"):WaitForChild("MovementInput")).new()
 require(root:WaitForChild("Controllers"):WaitForChild("DodgeController")).new(movementInput)
-require(root:WaitForChild("Controllers"):WaitForChild("BlockParryController")).new()
 
 print("[Client] systems initialized")
