@@ -2,8 +2,14 @@
 -- Shared client wrapper around ShapecastHitbox for melee weapons.
 -- Builds one persistent hitbox per tool and exposes StartSwing to run a timed window with per-swing targetsHit.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local ShapecastHitbox = require(ReplicatedStorage.Modules:WaitForChild("ShapecastHitBox"))
+
+-- We'll handle debug visuals ourselves; hide built-in Shapecast debug trails
+if ShapecastHitbox.Settings then
+	ShapecastHitbox.Settings.Debug_Visible = false
+end
 
 export type HitCallback = (humanoid: Humanoid, hitPosition: Vector3?, swingIndex: number) -> ()
 export type FallbackCallback = (swingIndex: number) -> ()
@@ -23,6 +29,9 @@ type Params = {
 
 local ClientHitbox = {}
 
+local DEBUG_MELEE_HITBOX = true
+local debugParts: { [Attachment]: Part } = {}
+
 function ClientHitbox.new(params: Params): HitboxController
 	local tool = params.Tool
 	local character = params.Character
@@ -32,7 +41,7 @@ function ClientHitbox.new(params: Params): HitboxController
 
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = {character}
+	raycastParams.FilterDescendantsInstances = { character }
 	raycastParams.IgnoreWater = true
 
 	local hitbox: any? = nil
@@ -56,13 +65,18 @@ function ClientHitbox.new(params: Params): HitboxController
 		end
 
 		local handle = tool:FindFirstChild("Handle")
-		if not handle then
-			warn("[ClientHitbox] No Handle found on tool", tool.Name)
+		local rootInstance: Instance? = handle
+		if config.CastRoot == "Character" then
+			rootInstance = character
+		end
+
+		if not rootInstance then
+			warn("[ClientHitbox] No root instance for hitbox (Handle/Character missing) on tool", tool.Name)
 			return nil
 		end
 
 		local ok, hb = pcall(function()
-			return ShapecastHitbox.new(handle, raycastParams)
+			return ShapecastHitbox.new(rootInstance, raycastParams)
 		end)
 
 		if not ok or not hb then
@@ -85,13 +99,13 @@ function ClientHitbox.new(params: Params): HitboxController
 			return
 		end
 
-		-- read cast data from config
+		-- read cast data from config (exact values, no scaling)
 		local castType = mapCastType(config.CastType)
 		local hitboxSize = config.HitboxSize or Vector3.new(2, 2, 2)
 		local hitboxOffset = config.HitboxOffset or CFrame.new()
 		local hitboxRadius = config.HitboxRadius or 0
 
-		local targetsHit: {[Humanoid]: boolean} = {}
+		local targetsHit: { [Humanoid]: boolean } = {}
 
 		hb:SetCastData({
 			CastType = castType,
@@ -102,7 +116,7 @@ function ClientHitbox.new(params: Params): HitboxController
 
 		hb:BeforeStart(function()
 			targetsHit = {}
-			raycastParams.FilterDescendantsInstances = {character}
+			raycastParams.FilterDescendantsInstances = { character }
 			hb.RaycastParams = raycastParams
 		end)
 
@@ -111,12 +125,58 @@ function ClientHitbox.new(params: Params): HitboxController
 				return
 			end
 
-			-- Attachments already follow the fist; keep casts centered on each segment with optional local offset.
-			for _, segment in hb:GetAllSegments() do
-				segment.CastData.CastType = castType
-				segment.CastData.Size = hitboxSize
-				segment.CastData.Radius = hitboxRadius
-				segment.CastData.CFrame = hitboxOffset
+			for attachment, segment in pairs(hb:GetAllSegments()) do
+				if not attachment or not segment then
+					continue
+				end
+				local castData = segment.CastData
+				if not castData then
+					continue
+				end
+
+				castData.CastType = castType
+				castData.Size = hitboxSize
+				castData.Radius = hitboxRadius
+				castData.CFrame = hitboxOffset
+
+				if DEBUG_MELEE_HITBOX then
+					local dbg = debugParts[attachment]
+					if not dbg then
+						dbg = Instance.new("Part")
+						dbg.Name = (tool and tool.Name or "Weapon") .. "_HitboxDebug"
+						dbg.Anchored = true
+						dbg.CanCollide = false
+						dbg.CanQuery = false
+						dbg.CanTouch = false
+						dbg.Material = Enum.Material.Neon
+						dbg.Transparency = 0.5
+						dbg.Parent = Workspace
+						debugParts[attachment] = dbg
+					end
+
+					local worldCF = attachment.WorldCFrame * castData.CFrame
+
+					if castType == ShapecastHitbox.CastTypes.Blockcast then
+						dbg.Size = castData.Size
+						dbg.CFrame = worldCF
+					elseif castType == ShapecastHitbox.CastTypes.Spherecast then
+						local r = castData.Radius
+						dbg.Size = Vector3.new(r * 2, r * 2, r * 2)
+						dbg.CFrame = worldCF
+					else
+						dbg.Size = Vector3.new(0.2, 0.2, 0.2)
+						dbg.CFrame = worldCF
+					end
+				end
+			end
+
+			if DEBUG_MELEE_HITBOX then
+				for attachment, part in pairs(debugParts) do
+					if not attachment or not hb:GetSegment(attachment) then
+						part:Destroy()
+						debugParts[attachment] = nil
+					end
+				end
 			end
 		end)
 
@@ -137,6 +197,12 @@ function ClientHitbox.new(params: Params): HitboxController
 
 		hb:OnStopped(function(cleanCallbacks)
 			cleanCallbacks()
+			if DEBUG_MELEE_HITBOX then
+				for _, part in pairs(debugParts) do
+					part:Destroy()
+				end
+				table.clear(debugParts)
+			end
 		end)
 
 		hb:HitStart(activeTime)
@@ -145,6 +211,12 @@ function ClientHitbox.new(params: Params): HitboxController
 	function controller:Destroy()
 		if hitbox then
 			hitbox:Destroy()
+		end
+		if DEBUG_MELEE_HITBOX then
+			for _, part in pairs(debugParts) do
+				part:Destroy()
+			end
+			table.clear(debugParts)
 		end
 	end
 

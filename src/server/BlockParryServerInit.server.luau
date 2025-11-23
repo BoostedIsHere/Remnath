@@ -2,7 +2,10 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local controllersFolder = script.Parent:WaitForChild("Controllers")
+local serverFolder = script.Parent
+local controllersFolder = serverFolder:FindFirstChild("Controllers")
+	or game:GetService("ServerScriptService"):WaitForChild("Controllers")
+
 local BlockParryService = require(controllersFolder:WaitForChild("BlockParryService"))
 
 local remotes = ReplicatedStorage:FindFirstChild("Remotes") or Instance.new("Folder")
@@ -22,8 +25,14 @@ local services = {}
 local function getService(player)
 	local svc = services[player]
 	if not svc then
-		svc = BlockParryService.new(player)
-		services[player] = svc
+		local ctor = BlockParryService and BlockParryService.new
+		if type(ctor) == "function" then
+			svc = ctor(player)
+			services[player] = svc
+		else
+			warn("[BlockParryServerInit] BlockParryService.new missing; block/parry disabled for", player)
+			return nil
+		end
 	end
 	return svc
 end
@@ -33,7 +42,9 @@ Players.PlayerAdded:Connect(function(player)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	BlockParryService.Remove(player)
+	if BlockParryService and type(BlockParryService.Remove) == "function" then
+		BlockParryService.Remove(player)
+	end
 	services[player] = nil
 end)
 
@@ -45,10 +56,14 @@ print("[BlockParryServerInit] Ready: remotes wired, services prewarmed for", #Pl
 
 BlockEvent.OnServerEvent:Connect(function(player, action)
 	local svc = getService(player)
-	svc:HandleBlockRequest(action)
+	if svc and type(svc.HandleBlockRequest) == "function" then
+		svc:HandleBlockRequest(action)
+	end
 end)
 
 ParryEvent.OnServerEvent:Connect(function(player, timestamp)
 	local svc = getService(player)
-	svc:HandleParryRequest(timestamp)
+	if svc and type(svc.HandleParryRequest) == "function" then
+		svc:HandleParryRequest(timestamp)
+	end
 end)

@@ -9,6 +9,7 @@ local BlockParryConfig = require(sharedFolder:WaitForChild("Modules"):WaitForChi
 local remotes = ReplicatedStorage:WaitForChild("Remotes")
 local BlockEvent = remotes:WaitForChild("BlockEvent")
 local ParryEvent = remotes:WaitForChild("ParryEvent")
+local Animations = ReplicatedStorage:WaitForChild("Animations")
 
 local function getSoundTemplate(name)
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
@@ -66,6 +67,8 @@ function BlockParryController.new()
 	self.Character = nil
 	self.toolConns = {}
 	self.attrConns = {}
+	self.Animator = nil
+	self.blockTrack = nil
 
 	self.activeInputs = {}
 	self.isBlocking = false
@@ -96,6 +99,7 @@ end
 function BlockParryController:bindCharacter(character)
 	self.Character = character
 	self.Humanoid = character:FindFirstChildOfClass("Humanoid")
+	self.Animator = nil
 
 	for _, conn in ipairs(self.toolConns) do
 		conn:Disconnect()
@@ -120,14 +124,37 @@ function BlockParryController:bindCharacter(character)
 	end))
 
 	if self.Humanoid then
+		self.Animator = self.Humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator")
+		self.Animator.Parent = self.Humanoid
+
+		local blockAnim = Animations:FindFirstChild("Block")
+		if blockAnim then
+			self.blockTrack = self.Animator:LoadAnimation(blockAnim)
+			self.blockTrack.Priority = Enum.AnimationPriority.Action
+			self.blockTrack.Looped = true
+		end
+	end
+
+	if self.Humanoid then
 		table.insert(self.attrConns, self.Humanoid.AttributeChanged:Connect(function(attr)
-			if attr == "IsBlocking" and not self.Humanoid:GetAttribute("IsBlocking") then
-				if self.blockLoop then
-					self.blockLoop:Stop()
-					self.blockLoop:Destroy()
-					self.blockLoop = nil
+			if attr == "IsBlocking" then
+				local nowBlocking = self.Humanoid:GetAttribute("IsBlocking")
+				if nowBlocking then
+					self.isBlocking = true
+					if self.blockTrack and not self.blockTrack.IsPlaying then
+						self.blockTrack:Play(0.05, 1, 1)
+					end
+				else
+					if self.blockTrack and self.blockTrack.IsPlaying then
+						self.blockTrack:Stop(0.1)
+					end
+					if self.blockLoop then
+						self.blockLoop:Stop()
+						self.blockLoop:Destroy()
+						self.blockLoop = nil
+					end
+					self.isBlocking = false
 				end
-				self.isBlocking = false
 			end
 		end))
 	end
@@ -177,6 +204,12 @@ function BlockParryController:startBlock()
 	self.isBlocking = true
 	self.blockStartedAt = os.clock()
 	warn(self.debugTag, "StartBlock -> firing Begin")
+	if self.Humanoid then
+		self.Humanoid:SetAttribute("IsBlocking", true)
+	end
+	if self.blockTrack then
+		self.blockTrack:Play(0.05, 1, 1)
+	end
 	BlockEvent:FireServer("Begin")
 
 	local template = getSoundTemplate("BlockSound")
@@ -202,7 +235,14 @@ function BlockParryController:stopBlock()
 
 	self.isBlocking = false
 	warn(self.debugTag, "StopBlock -> firing End")
+	if self.Humanoid then
+		self.Humanoid:SetAttribute("IsBlocking", false)
+	end
 	BlockEvent:FireServer("End")
+
+	if self.blockTrack and self.blockTrack.IsPlaying then
+		self.blockTrack:Stop(0.1)
+	end
 
 	if self.blockLoop then
 		self.blockLoop:Stop()
@@ -328,6 +368,10 @@ function BlockParryController:Destroy()
 		self.blockLoop:Stop()
 		self.blockLoop:Destroy()
 		self.blockLoop = nil
+	end
+	if self.blockTrack then
+		self.blockTrack:Stop()
+		self.blockTrack = nil
 	end
 end
 

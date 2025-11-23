@@ -14,6 +14,22 @@
         "$path": "src/shared"
       },
 
+      "CombatEvents": {
+        "$className": "Folder",
+        "M1Event": {
+          "$className": "RemoteEvent"
+        },
+        "HitmarkerEvent": {
+          "$className": "RemoteEvent"
+        },
+        "BlockEvent": {
+          "$className": "RemoteEvent"
+        },
+        "WeaponHitEvent": {
+          "$className": "RemoteEvent"
+        }
+      },
+
       "Remotes": {
         "$className": "Folder",
         "DodgeEvent": {
@@ -42,6 +58,24 @@
 
           "Config": {
             "$path": "src/weapons/fists/Config.luau"
+          },
+
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Name": "Handle",
+              "Anchored": false,
+              "CanCollide": false,
+              "Size": [1, 1, 1],
+              "Transparency": 0
+            },
+            "DmgPoint": {
+              "$className": "Attachment",
+              "$properties": {
+                "Name": "DmgPoint",
+                "Position": [0, 0, -0.5]
+              }
+            }
           }
         }
       }
@@ -51,6 +85,9 @@
       "$className": "ServerScriptService",
       "Server": {
         "$path": "src/server"
+      },
+      "Controllers": {
+        "$path": "src/server/Controllers"
       }
     },
 
@@ -60,7 +97,13 @@
       "StarterPlayerScripts": {
         "$className": "StarterPlayerScripts",
         "Client": {
-          "$path": "src/client"
+          "$className": "Folder",
+          "Controllers": {
+            "$path": "src/client/Controllers"
+          },
+          "Input": {
+            "$path": "src/client/Input"
+          }
         }
       },
 
