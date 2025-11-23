@@ -23,12 +23,15 @@ local HitmarkerEvent = CombatEvents:WaitForChild("HitmarkerEvent")
 
 local WeaponModule = require(ReplicatedStorage.Modules:WaitForChild("WeaponModule"))
 
+local M1_GAP = 0.6 -- minimum time between punches (seconds)
+
 --// Constructor
 function CombatController.new(character)
 	local self = setmetatable({}, CombatController)
 	self.Character = character
 	self.Humanoid = character:WaitForChild("Humanoid")
 	self.State = "Idle" -- "Idle", "Attacking", "Blocking", etc.
+	self.NextM1Time = 0
 	return self
 end
 
@@ -82,7 +85,18 @@ function CombatController:M1Attack(a, b, c)
 		return
 	end
 
-	if self.Humanoid:GetAttribute("IsDodging") then
+	local now = os.clock()
+	if now < self.NextM1Time then
+		if DEBUG then
+			print("[CombatController] Attack denied: M1 cooldown")
+		end
+		return
+	end
+
+	if self.Humanoid:GetAttribute("IsBlocking") or self.Humanoid:GetAttribute("IsDodging") then
+		if DEBUG then
+			print("[CombatController] Attack denied: blocking or dodging")
+		end
 		return
 	end
 
@@ -117,7 +131,9 @@ function CombatController:M1Attack(a, b, c)
 	local activeFrames   = config.ActiveFrames or {}
 	local activeDuration = activeFrames[swingIndex] or activeFrames[1] or 0.1
 
-	local damage    = damageTable[swingIndex] or damageTable[1] or 10
+	local baseDamage = damageTable[swingIndex] or damageTable[1] or 10
+	-- Global damage scaling: reduce per-punch damage to ~10%.
+	local damage    = math.max(1, math.floor(baseDamage * 0.1))
 	local knockback = knockTable[swingIndex] or knockTable[1] or 20
 
 	print(("[CombatController] M1Attack swing %d | dmg=%d, kb=%d"):format(swingIndex, damage, knockback))
@@ -166,8 +182,12 @@ function CombatController:M1Attack(a, b, c)
 				if hum and targetHRP and hum.Health > 0 and not alreadyHit[hum] then
 					alreadyHit[hum] = true
 
-					if hum:GetAttribute("IsBlocking") then
+					if hum:GetAttribute("IFrames") then
+						print("[CombatController]  -> Hit ignored (iframes) by", model.Name)
+					elseif hum:GetAttribute("IsBlocking") then
 						print("[CombatController]  -> Hit blocked by", model.Name)
+					elseif hum:GetAttribute("IsDodging") then
+						print("[CombatController]  -> Hit ignored (dodging) by", model.Name)
 					else
 						print("[CombatController]  -> Hit", model.Name)
 						local damageToApply = math.max(0, damage)
@@ -222,6 +242,9 @@ function CombatController:M1Attack(a, b, c)
 			self.State = "Idle"
 		end
 	end)
+
+	-- Enforce a minimum gap between punches.
+	self.NextM1Time = now + M1_GAP
 end
 
 return CombatController

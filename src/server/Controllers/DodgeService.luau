@@ -56,6 +56,7 @@ function DodgeService.new(player)
 	self.IsDodging = false
 	self.BodyVelocity = nil
 	self.IframeActive = false
+	self.IframeStartAt = 0
 	self.IframeEndsAt = 0
 	self.CooldownEndsAt = 0
 
@@ -103,6 +104,11 @@ function DodgeService:isInhibited()
 		return true
 	end
 
+	if self.Humanoid:GetAttribute("IsBlocking") then
+		warn("[DodgeService]", self.Player.Name, "dodge denied: blocking")
+		return true
+	end
+
 	for _, attr in ipairs(DodgeConfig.InhibitAttributes) do
 		if isTruthyAttribute(self.Humanoid, attr) then
 			return true
@@ -119,6 +125,9 @@ function DodgeService:stripIframes(reason)
 
 	self.IframeActive = false
 	self.IframeEndsAt = 0
+	if self.Humanoid then
+		self.Humanoid:SetAttribute("IFrames", nil)
+	end
 	DodgeEvent:FireClient(self.Player, "IFramesEnd", { reason = reason })
 end
 
@@ -259,14 +268,9 @@ function DodgeService:HandleDodgeRequest(clientDir, _timestamp)
 		self.Humanoid:SetAttribute("IsDodging", true)
 	end
 	self.CooldownEndsAt = now + DodgeConfig.DodgeCooldown
-
-	if not self:isInhibited() then
-		self.IframeActive = true
-		self.IframeEndsAt = now + DodgeConfig.IframeDuration
-	else
-		self.IframeActive = false
-		self.IframeEndsAt = 0
-	end
+	self.IframeActive = false
+	self.IframeStartAt = now + (DodgeConfig.IframeStartOffset or 0)
+	self.IframeEndsAt = now + (DodgeConfig.IframeEndOffset or DodgeConfig.IframeDuration)
 
 	self:applyForce(direction, distance, duration)
 
@@ -275,11 +279,23 @@ function DodgeService:HandleDodgeRequest(clientDir, _timestamp)
 		self:updateDodge(startTime, duration)
 	end)
 
+	-- Server schedules iframe window; client only mirrors visuals.
+	task.delay(math.max(0, self.IframeStartAt - now), function()
+		if self.IsDodging and not self:isInhibited() then
+			self.IframeActive = true
+			if self.Humanoid then
+				self.Humanoid:SetAttribute("IFrames", true)
+			end
+			DodgeEvent:FireClient(self.Player, "IFramesStart", {
+				duration = math.max(0, self.IframeEndsAt - self.IframeStartAt),
+			})
+		end
+	end)
+
 	DodgeEvent:FireClient(self.Player, "Start", {
 		direction = direction,
 		distance = distance,
 		duration = duration,
-		iframes = self.IframeActive and DodgeConfig.IframeDuration or 0,
 	})
 end
 

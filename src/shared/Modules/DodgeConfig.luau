@@ -7,6 +7,9 @@ DodgeConfig.MaxRollDistance = 13
 
 -- Time spent granting invulnerability on startup (seconds).
 DodgeConfig.IframeDuration = 0.15
+-- Souls-like window: delay before i-frames start, and when they end (relative to roll start).
+DodgeConfig.IframeStartOffset = 0.15
+DodgeConfig.IframeEndOffset = 0.45
 
 -- Total cooldown between dodges (seconds).
 DodgeConfig.DodgeCooldown = 0.6

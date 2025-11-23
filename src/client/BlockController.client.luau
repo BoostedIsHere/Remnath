@@ -28,6 +28,7 @@ local function startBlock()
 	isBlocking = true
 	originalWalkSpeed = humanoid.WalkSpeed
 
+	-- Set locally for immediate gating; server will authoritatively mirror this via BlockRemoteHandler.
 	humanoid:SetAttribute("IsBlocking", true)
 	blockRemote:FireServer(true)
 
@@ -65,6 +66,10 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 		return
 	end
 
+	if humanoid:GetAttribute("IsBlocking") then
+		return
+	end
+
 	if input.KeyCode == Enum.KeyCode.F then
 		startBlock()
 	end
@@ -88,7 +93,6 @@ player.CharacterAdded:Connect(function(char)
 	blockAT = animator:LoadAnimation(blockAnimation)
 	originalWalkSpeed = humanoid.WalkSpeed
 	isBlocking = false
-	humanoid:SetAttribute("IsBlocking", nil)
 end)
 
 print(DEBUG_TAG, "Loaded")
